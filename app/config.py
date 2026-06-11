@@ -17,7 +17,7 @@ class Config:
     S3_BUCKET_EVIDENCIAS: str = os.getenv("S3_BUCKET_EVIDENCIAS", "bustrack-evidencias")
     S3_BUCKET_LICENCIAS: str = os.getenv("S3_BUCKET_LICENCIAS", "bustrack-licencias")
 
-    DYNAMODB_ENDPOINT: str = os.getenv("DYNAMODB_ENDPOINT", "http://localhost:4566")
+    DYNAMODB_ENDPOINT: str | None = os.getenv("DYNAMODB_ENDPOINT") or None
     DYNAMODB_TABLE_INFERENCIAS: str = os.getenv(
         "DYNAMODB_TABLE_INFERENCIAS", "inferencias_ia"
     )
