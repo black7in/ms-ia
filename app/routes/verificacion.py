@@ -33,6 +33,20 @@ def verificar_chofer() -> Any:
     except Exception:
         foto_registrada_s3_key = ""
 
+    if not foto_registrada_s3_key:
+        return (
+            jsonify(
+                {
+                    "verificado": False,
+                    "identidad": {"coincide": False, "confianza": 0.0},
+                    "estado": None,
+                    "puede_iniciar_viaje": False,
+                    "mensaje": "Chofer no tiene foto registrada en el sistema",
+                }
+            ),
+            200,
+        )
+
     resultado_identidad = rekognition_service.comparar_caras(
         s3_key_fuente=foto_registrada_s3_key,
         s3_key_objetivo=s3_key,
