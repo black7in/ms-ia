@@ -92,30 +92,6 @@ class SegmentacionService:
             seg["descripcion"] = etiquetas[idx]["descripcion"]
             seg["id"] = idx
             del seg["_gasto"]
-            mask = labels == i
-            clientes_segmento = [clientes_data[j] for j in range(total) if mask[j]]
-
-            caracteristicas = {}
-            if clientes_segmento:
-                frecuencias = [
-                    float(c.get("frecuencia_mensual", 0)) for c in clientes_segmento
-                ]
-                gastos = [float(c.get("gasto_promedio", 0)) for c in clientes_segmento]
-                caracteristicas = {
-                    "frecuencia_promedio_mensual": round(np.mean(frecuencias), 2),
-                    "gasto_promedio": round(np.mean(gastos), 2),
-                }
-
-            segmentos.append(
-                {
-                    "id": i,
-                    "nombre": label_info["nombre"],
-                    "descripcion": label_info["descripcion"],
-                    "total_clientes": int(counts[i]),
-                    "porcentaje": round(counts[i] / total * 100, 1),
-                    "caracteristicas": caracteristicas,
-                }
-            )
 
         result = {
             "total_clientes": total,
