@@ -26,6 +26,24 @@ def create_app() -> Flask:
     app.register_blueprint(segmentacion_bp)
     app.register_blueprint(agente_bp)
 
+    @app.before_request
+    def decamelize_request():
+        if request.is_json:
+            data = request.get_json(silent=True)
+            if isinstance(data, (dict, list)):
+                decamelized = humps.decamelize(data)
+                request._cached_data = json.dumps(decamelized).encode()
+                request.__dict__.pop("_cached_json", None)
+
+    @app.after_request
+    def camelize_response(response):
+        if response.content_type == "application/json":
+            data = response.get_json()
+            if data is not None:
+                response.data = json.dumps(humps.camelize(data))
+                response.headers.pop("Content-Length", None)
+        return response
+
     return app
 
 
