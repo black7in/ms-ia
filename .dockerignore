@@ -1,0 +1,14 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+.pytest_cache/
+tmp/ia-uploads/
+credentials/
+*.log
+.env.prod
+docs/

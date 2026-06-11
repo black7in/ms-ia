@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+# *.pkl — NO ignorar; los modelos .pkl van en el repositorio para el MVP (segun plan)
+.env
+*.egg-info/
+venv/
+.venv/
+tmp/
+credentials/
+*.log
+.pytest_cache/

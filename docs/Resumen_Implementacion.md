@@ -1,0 +1,531 @@
+# MS-IA — Resumen de Implementacion
+
+---
+
+## Paso 1: Setup Inicial
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| `app/__init__.py` | Init package |
+| `app/main.py` | Entry point Flask con factory `create_app()`, CORS configurado |
+| `app/config.py` | Variables de entorno con `python-dotenv`, mocks en `true` |
+| `app/routes/health.py` | Blueprint `health` con endpoint `GET /health` |
+| `app/services/__init__.py` | Init package |
+| `app/schemas/__init__.py` | Init package |
+| `app/utils/__init__.py` | Init package |
+| `app/utils/datetime_utils.py` | Helpers fecha/hora Bolivia UTC-4 |
+| `app/utils/image_utils.py` | Helpers: `b64_to_bytes`, `crop` |
+| `app/models/__init__.py` | Init package |
+| `requirements.txt` | Dependencias (Flask, XGBoost, scikit-learn, boto3, etc.) |
+| `requirements-dev.txt` | Dev: black, flake8, pytest |
+| `.env.example` | Template variables de entorno |
+| `.env` | Variables de entorno desarrollo (mocks `true`) |
+| `docker-compose.yml` | LocalStack DynamoDB puerto 4566 |
+| `Dockerfile` | Multi-stage: build + production con Gunicorn |
+| `.gitignore` | Ignorar cache, `.env`, venv, credenciales |
+
+**Ajustes por Python 3.13:**
+- `inference-sdk` removido (no compatible; Roboflow usara `requests` en mock)
+- `scikit-learn>=1.5.0`, `xgboost>=2.1.0` (originales sin wheel para 3.13)
+- Resto de dependencias con `>=` para compatibilidad
+
+**Verificacion:**
+- `GET /health` → 200 OK
+- `pip install -r requirements.txt` exitoso (venv)
+- `pip install -r requirements-dev.txt` exitoso
+- `flake8 app/` → 0 errores
+- `black --check app/` → formateo aplicado
+
+---
+
+## Paso 2: Docker + LocalStack DynamoDB
+
+**Fecha:** 2026-05-23
+
+**Decisiones:**
+- MS-Operaciones ya tiene LocalStack corriendo en puerto 4566. Se reusa el mismo contenedor.
+- `docker-compose.yml` queda disponible para desarrollo independiente.
+
+**Verificacion:**
+- `docker ps` → LocalStack en `ms-operaciones-localstack-1:4566`
+- Conexion Python/boto3 a DynamoDB exitosa
+- Tabla existente de MS-Operaciones: `eventos_viaje`
+
+---
+
+## Paso 3: Script `create_dynamo_tables.py`
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| `scripts/create_dynamo_tables.py` | Crea tablas `inferencias_ia` y `predicciones_ml` en DynamoDB |
+
+**Tablas creadas:**
+
+| Tabla | PK | SK | GSI / Features |
+|---|---|---|---|
+| `inferencias_ia` | `tipo_fecha` (S) | `timestamp_id` (S) | GSI `chofer-fecha-index` (PK=`chofer_id`, SK=`created_at`) |
+| `predicciones_ml` | `tipo_entidad` (S) | `fecha` (S) | TTL en `expira_en` |
+
+**Verificacion:**
+- Script ejecutado contra LocalStack: ambas tablas creadas
+- Idempotencia verificada: segunda ejecucion detecta tablas existentes sin error
+- `flake8 scripts/` → 0 errores
+
+---
+
+## Paso 4: Schemas Pydantic
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| `app/schemas/verificacion.py` | Schemas para verificacion chofer y bus (request + response) |
+| `app/schemas/prediccion.py` | Schemas para prediccion demanda, aprobacion y reentrenamiento |
+| `app/schemas/segmentacion.py` | Schemas para segmentacion de clientes |
+| `app/schemas/anomalias.py` | Schemas para deteccion de anomalias |
+
+**Schemas implementados:**
+
+| Modulo | Schemas |
+|---|---|
+| Verificacion | `VerificacionChoferRequest`, `VerificacionChoferResponse`, `IdentidadResult`, `EstadoResult` |
+| Verificacion | `VerificacionBusRequest`, `VerificacionBusResponse`, `PlacaResult`, `AlertaDano`, `DanosResult` |
+| Verificacion | `EstadoVerificacionResponse`, `DetalleChofer`, `DetalleBus`, `DetalleVerificacion` |
+| Prediccion | `PrediccionDemandaResponse`, `FactoresDemanda`, `AprobarPrediccionRequest`, `ReentrenarRequest` |
+| Segmentacion | `SegmentacionResponse`, `SegmentoCliente`, `CaracteristicasSegmento`, `ClienteSegmentoResponse` |
+| Anomalias | `AnomaliasVentasResponse`, `AnomaliaItem`, `AnomaliaVendedorResponse` |
+
+**Verificacion:**
+- Todos los schemas importan sin errores
+- Validacion con datos de ejemplo exitosa (request y response)
+- `black app/schemas/` aplicado
+- `flake8 app/schemas/` → 0 errores
+
+---
+
+## Paso 5: S3Service
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| `app/services/s3_service.py` | Servicio S3 con mock local y soporte real via boto3 |
+
+**Metodos:**
+- `subir_imagen(imagen_base64, key, bucket)` → decodifica base64 y guarda. Retorna la key.
+- `leer_imagen(key, bucket)` → retorna bytes de la imagen
+- `existe_imagen(key, bucket)` → verifica existencia
+
+**Mock (MOCK_S3=true):**
+- Guarda en `tmp/ia-uploads/{bucket}/{key}`
+- Crea directorios automaticamente
+- Sin dependencia de S3 real ni LocalStack
+
+**Real (MOCK_S3=false):**
+- Usa boto3 S3 client con credenciales de `Config`
+- Crea el bucket automaticamente si no existe
+
+**Verificacion:**
+- Prueba con mock: subir → leer → verificar existencia OK
+- `flake8` → 0 errores
+- `black` aplicado
+
+---
+
+## Paso 6: DynamoService
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| `app/services/dynamo_service.py` | Servicio DynamoDB con resource boto3, operaciones sobre ambas tablas |
+
+**Metodos:**
+
+| Metodo | Tabla | Descripcion |
+|---|---|---|
+| `guardar_inferencia(...)` | `inferencias_ia` | Guarda log de inferencia (FACIAL, BUS_PLACA, BUS_DANOS) |
+| `consultar_inferencias_por_chofer(chofer_id)` | GSI `chofer-fecha-index` | Historial por chofer |
+| `consultar_inferencias_por_viaje_y_tipo(viaje_id, tipo)` | `inferencias_ia` (scan) | Inferencias de un viaje |
+| `verificar_viaje_completado(viaje_id)` | `inferencias_ia` | Determina si chofer y bus estan verificados |
+| `guardar_prediccion(...)` | `predicciones_ml` | Cachea prediccion con TTL |
+| `obtener_prediccion(tipo_entidad, fecha)` | `predicciones_ml` | Recupera prediccion cacheada |
+| `listar_predicciones_por_tipo(prefix)` | `predicciones_ml` | Lista predicciones por tipo |
+
+**Ajuste tecnico:**
+- Funcion `_to_decimal()` convierte recursivamente `float` → `Decimal` (requerido por DynamoDB)
+- Timestamps generados con `iso_bolivia()` (UTC-4)
+
+**Verificacion:**
+- `guardar_inferencia` → inserta en `inferencias_ia` OK
+- `consultar_inferencias_por_chofer` via GSI → OK
+- `verificar_viaje_completado` → detecta chofer verificado, bus pendiente OK
+- `guardar_prediccion` + `obtener_prediccion` → OK
+- `flake8` → 0 errores
+
+---
+
+
+## Paso 7: MSCoreService
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| pp/services/mscore_service.py | Cliente HTTP para MS-Core con timeout 10s |
+
+**Metodos:**
+
+| Metodo | MS-Core Endpoint | Descripcion |
+|---|---|---|
+| get_chofer(chofer_id) | GET /choferes/{id} | Datos del chofer (incluye fotoFacialS3Key) |
+| get_bus(bus_id) | GET /buses/{id} | Datos del bus (incluye placa) |
+| get_datos_entrenamiento(tipo) | GET /reportes/datos-entrenamiento?tipo= | Datos historicos para ML |
+| probar_precio_sugerido(...) | POST /tarifas/aprobar-sugerencia | Crea tarifa TEMPORADA_ALTA |
+
+**Caracteristicas:**
+- Timeout 10s en todas las llamadas (segun plan)
+- aise_for_status() en errores HTTP
+- Singleton mscore_service
+
+**Verificacion:**
+- lake8 ? 0 errores
+- lack aplicado
+- Importacion correcta (base_url=http://localhost:3000)
+
+---
+
+
+## Paso 8: RekognitionService
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| pp/services/rekognition_service.py | AWS Rekognition para identidad facial y estado del chofer |
+
+**Metodos:**
+
+| Metodo | API AWS | Descripcion |
+|---|---|---|
+| comparar_caras(s3_key_fuente, s3_key_objetivo) | CompareFaces | Compara foto registrada vs selfie |
+| nalizar_estado(s3_key) | DetectFaces | Analiza ojos abiertos, emociones, somnolencia |
+
+**Umbrales (desde Config):**
+- Identidad: Similarity >= UMBRAL_IDENTIDAD_FACIAL (90%)
+- Somnolencia: EyesOpen.Confidence < UMBRAL_SOMNOLENCIA (70%)
+
+**Mock (MOCK_REKOGNITION=true):**
+- comparar_caras ? siempre coincide, confianza 98.5
+- nalizar_estado ? siempre CALM, sin somnolencia
+
+**Verificacion:**
+- Mock retorna datos segun especificacion del plan
+- lake8 ? 0 errores
+
+---
+
+
+## Paso 9: RoboflowService
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| pp/services/roboflow_service.py | Deteccion de placa y danos via Roboflow API (mock + real) |
+
+**Metodos:**
+
+| Metodo | Descripcion |
+|---|---|
+| detectar_placa(imagen_base64) | Detecta placa, retorna bounding box + confianza |
+| detectar_danos(imagen_base64) | Detecta danos en el bus, retorna lista de alertas |
+
+**Implementacion real:**
+- Usa equests POST a https://detect.roboflow.com/{model_id}
+- Timeout 10s
+- Filtra por umbral UMBRAL_CONFIANZA_PLACA (80%) y UMBRAL_CONFIANZA_DANO (75%)
+
+**Mock (MOCK_ROBOFLOW=true):**
+- detectar_placa ? encontrada=True, bounding box fijo, confianza 92%
+- detectar_danos ? lista vacia (sin danos)
+
+**Verificacion:**
+- Mock funcional: placa detectada OK, sin danos OK
+- lake8 ? 0 errores
+
+---
+
+
+## Paso 10: VisionService (Google OCR)
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| pp/services/vision_service.py | OCR de texto con Google Vision API (mock + real) |
+
+**Metodo:** leer_texto(imagen_bytes) ? texto detectado en la placa
+
+**Mock (MOCK_VISION=true):** retorna siempre "3421-ABC"
+
+**Real:** usa google.cloud.vision.ImageAnnotatorClient.text_detection(), lazy import para evitar carga innecesaria en modo mock
+
+**Verificacion:**
+- Mock retorna "3421-ABC"
+- lake8 ? 0 errores
+
+---
+
+
+## Paso 11: Router Verificacion
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| pp/routes/verificacion.py | Endpoints verificacion chofer y bus |
+| pp/utils/jwt_utils.py | Decorador equire_auth (JWT Bearer) |
+| pp/services/notificacion_service.py | Stub de notificaciones (mock: solo loguea) |
+
+**Endpoints implementados:**
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| POST | /verificacion/chofer | Verifica identidad facial + estado del chofer |
+| POST | /verificacion/bus | Verifica placa (Roboflow+Vision) + danos del bus |
+| GET | /verificacion/viaje/<id>/estado | Estado consolidado de verificacion del viaje |
+
+**Flujos validados:**
+- Chofer: sube selfie ? S3 ? Rekognition (compare + detect) ? guarda DynamoDB ? response
+- Bus: sube 3 fotos ? S3 ? Roboflow placa + Vision OCR ? Roboflow danos ? guarda DynamoDB ? response
+- Estado: consulta DynamoDB (FACIAL + BUS_PLACA) ? determina si puede iniciar
+
+**Bugs corregidos durante prueba:**
+- image_utils.crop() ahora convierte RGBA ? RGB antes de guardar JPEG
+- Router siempre llama a Rekognition aunque MS-Core falle (mock lo ignora)
+
+**Verificacion:**
+- 3 endpoints probados con JWT, todos retornan 200
+- Respuestas coinciden con schemas del plan
+- lake8 ? 0 errores
+- PyJWT agregado a equirements.txt
+
+---
+
+
+## Paso 12: Scripts de Entrenamiento
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Descripcion |
+|---|---|
+| scripts/generate_synthetic_data.py | Genera datos sinteticos con patrones bolivianos |
+| pp/models/train/train_demand.py | Entrena XGBoost para prediccion de demanda |
+| pp/models/train/train_segmentacion.py | Entrena K-Means para segmentacion de clientes |
+| pp/models/train/train_anomalias.py | Entrena Isolation Forest para deteccion de anomalias |
+
+**Datos sinteticos generados:**
+
+| Dataset | Registros | Caracteristicas |
+|---|---|---|
+| demand_data.csv | 1095 (3 rutas x 365 dias) | Feriados bolivianos, temp. alta enero/julio, picos vie/sab |
+| clientes_data.csv | 250 clientes | 3 perfiles: frecuente (18%), ocasional (50%), comerciante (32%) |
+| entas_data.csv | 30 vendedores | 2 anomalos con alta tasa cancelacion y fuera de horario |
+
+**Modelos entrenados:**
+
+| Modelo | Output | Metricas |
+|---|---|---|
+| XGBoost | demand_model.pkl (237 KB) | R� = 0.9003 |
+| K-Means | kmeans_model.pkl (1.8 KB) | 3 clusters: [149, 68, 33], inercia=309092 |
+| Isolation Forest | isolation_forest_model.pkl (295 KB) | 2/30 anomalias (6.7%) |
+
+**Dependencias agregadas:** pandas en equirements.txt
+
+**Verificacion:**
+- Datos generados con feriados reales bolivianos (6 ago, Carnaval, Semana Santa)
+- 3 modelos entrenados y guardados como .pkl
+- lake8 ? 0 errores
+
+---
+
+
+## Paso 13: PrediccionService (XGBoost)
+
+**Fecha:** 2026-05-23
+
+**Archivo:** pp/services/prediccion_service.py
+
+**Caracteristicas:**
+- Lazy loading del modelo demand_model.pkl
+- Cache en DynamoDB (predicciones_ml) con TTL
+- Features construidos desde fecha: dia_semana, feriados, temporada alta
+- Precio sugerido = precio_base * (1 + ajuste/100)
+- Ajuste basado en ocupacion predicha
+
+**Verificacion:**
+- 6 de agosto (feriado): ocupacion=0.85, precio=99.89 BOB
+- Cache funcional: segunda llamada mismo dia retorna desde DynamoDB
+- lake8 ? 0 errores
+
+---
+
+## Paso 14: SegmentacionService (K-Means)
+
+**Fecha:** 2026-05-23
+
+**Archivo:** pp/services/segmentacion_service.py
+
+**Caracteristicas:**
+- Lazy loading del modelo kmeans_model.pkl
+- 3 clusters con etiquetas: Viajero frecuente, ocasional, comerciante
+- Calcula caracteristicas promedio por segmento
+
+**Verificacion:**
+- 250 clientes segmentados en 3 clusters
+- Segmentos: 149 (59.6%), 68 (27.2%), 33 (13.2%)
+- lake8 ? 0 errores
+
+---
+
+## Paso 15: AnomaliaService (Isolation Forest)
+
+**Fecha:** 2026-05-23
+
+**Archivo:** pp/services/anomalia_service.py
+
+**Caracteristicas:**
+- Lazy loading del modelo isolation_forest_model.pkl
+- Detecta anomalias con decision_function score
+- Nivel de alerta ALTO (score < -0.4) o MEDIO
+
+**Verificacion:**
+- 2 anomalias detectadas de 30 vendedores (6.7%)
+- Vendedores anomalos correctamente identificados
+- lake8 ? 0 errores
+
+---
+
+
+## Paso 16: Routers ML (prediccion, segmentacion, anomalias)
+
+**Fecha:** 2026-05-23
+
+**Archivos creados:**
+
+| Archivo | Endpoints |
+|---|---|
+| pp/routes/prediccion.py | GET /prediccion/demanda, POST /prediccion/aprobar, POST /modelos/reentrenar |
+| pp/routes/segmentacion.py | GET /segmentacion/clientes, GET /segmentacion/cliente/<id> |
+| pp/routes/anomalias.py | GET /anomalias/ventas, GET /anomalias/vendedor/<id> |
+
+**Verificacion (todos 200 OK):**
+- GET /prediccion/demanda?rutaId=ruta-1&fecha=2026-08-06 ? 85% ocup, 99.89 BOB
+- GET /segmentacion/clientes ? 250 clientes, 3 segmentos
+- GET /segmentacion/cliente/cli-1 ? Viajero frecuente
+- GET /anomalias/ventas ? 2 anomalias
+- GET /anomalias/vendedor/ven-1 ? score=-0.11, nivel MEDIO
+- lake8 ? 0 errores
+- Blueprints registrados en main.py
+
+---
+
+
+## Paso 17: APScheduler
+
+**Fecha:** 2026-05-23
+
+**Archivo:** pp/scheduler.py
+
+**Jobs configurados:**
+
+| Modelo | Trigger | Horario |
+|---|---|---|
+| XGBoost | cron day_of_week=mon | Lunes 3:00 AM |
+| K-Means | cron day=1 | Dia 1 del mes 4:00 AM |
+| Isolation Forest | cron day_of_week=sun | Domingo 5:00 AM |
+
+**Comportamiento mock:** Solo loguea, no reentrena realmente.
+**Integrado en** create_app() via iniciar_scheduler().
+
+---
+
+## Paso 18: NotificacionService
+
+**Fecha:** 2026-05-23 (stub creado en paso 11)
+
+**Archivo:** pp/services/notificacion_service.py
+
+**Metodos:** lertar_supervisor(), lertar_dano_bus()
+**Mock:** Solo loguea con [MOCK] prefix.
+
+---
+
+## Paso 19: Dockerfile multi-stage
+
+**Fecha:** 2026-05-23 (creado en paso 1)
+
+**Archivo:** Dockerfile
+
+**Stages:**
+1. uild ? python:3.11-slim, instala dependencias
+2. production ? copia app + modelos .pkl, Gunicorn 2 workers, timeout 30s
+
+---
+
+## Paso 20: Pruebas Finales
+
+**Fecha:** 2026-05-23
+
+**Endpoints probados (todos 200 OK):**
+
+| Endpoint | Metodo | Resultado |
+|---|---|---|
+| /health | GET | {"status":"ok"} |
+| /verificacion/chofer | POST | Identidad OK, CALM |
+| /verificacion/bus | POST | Placa OK, sin danos |
+| /verificacion/viaje/<id>/estado | GET | Chofer+Bus verificados |
+| /prediccion/demanda | GET | 85% ocup, 99.89 BOB |
+| /prediccion/aprobar | POST | Aprobacion OK |
+| /modelos/reentrenar | POST | 202 Accepted |
+| /segmentacion/clientes | GET | 250 clientes, 3 segmentos |
+| /segmentacion/cliente/<id> | GET | Viajero frecuente |
+| /anomalias/ventas | GET | 2 anomalias |
+| /anomalias/vendedor/<id> | GET | Score=-0.11, MEDIO |
+
+**Metricas:**
+- lake8 proyecto completo ? 0 errores
+- lack aplicado en todos los archivos
+- Modelos .pkl generados y funcionales
+- DynamoDB tablas creadas con GSI y TTL
+- JWT funcional en todos los endpoints protegidos
+
+---
+
