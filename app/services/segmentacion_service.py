@@ -8,12 +8,9 @@ from app.services.dynamo_service import dynamo_service
 from app.utils.datetime_utils import iso_bolivia
 
 SEGMENT_LABELS = {
-    0: {
-        "nombre": "Viajero frecuente",
-        "descripcion": "Viaja 3+ veces al mes, gasto alto",
-    },
-    1: {"nombre": "Viajero ocasional", "descripcion": "Viaja 1-2 veces al mes"},
-    2: {"nombre": "Comerciante", "descripcion": "Rutas y dias fijos, patron regular"},
+    0: {"nombre": "Cliente frecuente", "descripcion": "Alta frecuencia, alto gasto"},
+    1: {"nombre": "Cliente regular", "descripcion": "Frecuencia media"},
+    2: {"nombre": "Cliente ocasional", "descripcion": "Baja frecuencia"},
 }
 
 
